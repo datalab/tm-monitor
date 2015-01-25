@@ -1,0 +1,605 @@
+#!/bin/bash
+
+#   tm-monitor
+#   copyright 2015 dataLAB
+
+#   adapted from bash script posted by Devin Campbell at:
+#   http://fixitscripts.com/problems/script-check-time-machine-backups-and-report-how-long-since-last-good-backup-on-client-daily-report
+
+#   Supports:
+#   * OS X 10.10
+
+# ------------------------------------------------------------
+# General Config
+# ------------------------------------------------------------
+
+readonly VERSION='0.1'
+
+# ------------------------------------------------------------
+# Functions
+# ------------------------------------------------------------
+
+get_configs() {
+  set -e
+  [[  -e ${HOME}/.config/tm-monitor/config ]] && \
+  source ${HOME}/.config/tm-monitor/config
+}
+
+usage_long() {
+less << EOF
+tm-monitor <options>
+
+
+DESCRIPTION
+tm-monitor can be a useful set of tools when used in conjunction with OS X's built-in Time Machine. NOTE: tm-monitor may only be used be used with 10.10 (Yosemite) or higher.
+
+In addition to scheduling the time machine backups, the tm-monitor can alert you via email when a backup has not occurred for a specified period of time.
+
+Before usage, certain settings must be configured in the appropriate user's "~/.config" directory.
+
+
+OPTIONS
+-h, --help      Show this help
+-s, --setup     Configure the settings
+-t, --test      Test your configuration
+-c, --check     Perform a backup check
+-b, --backup    Perform a backup
+-i, --install   Install the LaunchAgents
+-u, --uninstall Uninstall the LaunchAgents
+--version       Prints version
+
+
+EXAMPLES
+. tm-monitor --setup
+. tm-monitor --check
+. tm-monitor --backup
+. tm-monitor --install
+. tm-monitor --uninstall
+
+VERSION
+$VERSION
+
+EOF
+exit 0
+}
+
+usage() {
+  echo ""
+  echo "tm-monitor <options>"
+  echo ""
+  echo "OPTIONS"
+  echo "-h, --help"
+  echo "-s, --setup"
+  echo "-t, --test"
+  echo "-c, --check"
+  echo "-b, --backup"
+  echo "-i, --install"
+  echo "-u, --uninstall"
+  echo "--version"
+  echo ""
+  exit $ERROR_USAGE
+}
+
+setup_warning() {
+  echo "The configuration file does not exist. Try running 'tm-monitor --setup'"
+  exit 0
+}
+
+setup_config() {
+  printf '\033\143'
+  sleep .5
+  echo "You will now be walked through the setup of tm-monitor."
+  echo ""
+  sleep 1
+  setup_backup_time
+  setup_alert_interval
+  setup_alert_max_emails
+  setup_email_alerts
+  sleep 1
+  setup_write_config
+  echo "Your configuration file has now been written. It may be a good idea to test you configuration by running the \"tm-monitor --test\" command."
+  exit 0
+}
+
+setup_backup_time() {
+  # Initialize the variables
+  BACKUP_TIME="none"
+  # Ask the user for a valid backup time.
+  while [[ $BACKUP_TIME == "none" ]]; do
+    echo "What would you like Time Machine to backup once every 24 hours? [hh:mm]"
+    echo "As an example, an 11PM backup would look like '23:00', and a 4AM backup would look like '04:00'."
+    read -p ">> " INPUT_TIME
+    if [ "$INPUT_TIME" ]; then
+      BACKUP_TIME=\"$INPUT_TIME\"
+    fi
+  done
+  echo ""
+}
+
+setup_alert_interval() {
+  # Initialize the variables
+  ALERT_INTERVAL="none"
+  # Ask the user the number of hours since backup to alert for.
+  while [[ $ALERT_INTERVAL == "none" ]]; do
+    echo "In case of backup failure, how many hours should pass before an email alert?"
+    echo "You probably want to set your interval over 24, but you may not want to go beyond 72."
+    read -p ">> " INPUT_INTERVAL
+    if [ "$INPUT_INTERVAL" ]; then
+      ALERT_INTERVAL=\"$INPUT_INTERVAL\"
+    fi
+  done
+  echo ""
+}
+
+setup_alert_max_emails() {
+  # Initialize the variables
+  ALERT_MAX_EMAILS="none"
+  # Ask the user the number of emails they wish to receive.
+  while [[ $ALERT_MAX_EMAILS == "none" ]]; do
+    echo "In case of backup failure, what is the maximum number of emails you wish to receive?"
+    echo "Alert emails can clog your inbox, so you may want to limit this to less than 10."
+    read -p ">> " INPUT_MAX
+    if [ "$INPUT_MAX" ]; then
+      ALERT_MAX_EMAILS=\"$INPUT_MAX\"
+    fi
+  done
+  echo ""
+}
+
+setup_email_alerts() {
+  # Initialize the variables
+  ALERT_RECIPIENT="none"
+  ALERT_SUBJECT="none"
+  # Ask the user who should receive the emails.
+  while [[ $ALERT_RECIPIENT == "none" ]]; do
+    echo "When an alert email is sent. What email address should receive the alert?"
+    echo "You can specify multiple recipients by separating the addresses with commas."
+    read -p ">> " INPUT_RECIPIENT
+    if [ "$INPUT_RECIPIENT" ]; then
+      ALERT_RECIPIENT=\"$INPUT_RECIPIENT\"
+    fi
+  done
+  echo ""
+  # Ask the user what the subject line of the email should be.
+  while [[ $ALERT_SUBJECT == "none" ]]; do
+    echo "When an alert email is sent. What should the subject of the email be?"
+    read -p ">> " INPUT_SUBJECT
+    if [ "$INPUT_SUBJECT" ]; then
+      ALERT_SUBJECT=\"$INPUT_SUBJECT\"
+    fi
+  done
+  echo ""
+}
+
+setup_write_config() {
+  mkdir -p ${HOME}/.config/tm-monitor
+  chmod 700 ${HOME}/.config/tm-monitor
+  echo "BACKUP_TIME=${BACKUP_TIME}" > ${HOME}/.config/tm-monitor/config
+  echo "ALERT_INTERVAL=${ALERT_INTERVAL}" >> ${HOME}/.config/tm-monitor/config
+  echo "ALERT_MAX_EMAILS=${ALERT_MAX_EMAILS}" >> ${HOME}/.config/tm-monitor/config
+  echo "ALERT_RECIPIENT=${ALERT_RECIPIENT}" >> ${HOME}/.config/tm-monitor/config
+  echo "ALERT_SUBJECT=${ALERT_SUBJECT}" >> ${HOME}/.config/tm-monitor/config
+  chmod 600 ${HOME}/.config/tm-monitor/config
+}
+
+check_os_dependency() {
+  # Current version
+  OS_VERSION=`sw_vers -productVersion | grep -E -o "[0-9]+\.[0-9]+" | sed 's,\s*\.\s*,,g'`
+  # Minimum version is 10.10
+  VALID_OS=`echo "$OS_VERSION < 1010" | bc -l`
+  if [ $VALID_OS == 1 ]; then
+    echo "tm-monitor is only compatable with OS 10.10 (Yosemite) or greater."
+    exit 1
+  fi
+}
+
+perform_tm_check() {
+  # Check the time machine disk for the last backup date as a string
+  LASTBACKUPSTRING=`echo $(tmutil latestbackup | grep -E -o "[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}")`
+  # If there is no string, then read the preferences file
+  if [ "$LASTBACKUPSTRING" == "" ]; then
+    LASTBACKUPSTRING=`defaults read ~/Library/Preferences/com.datalabprojects.timemachine LastBackup`
+    if [ "$LASTBACKUPSTRING" == "" ]; then
+      # Send an email alert
+      MESSAGE="TIME MACHINE HAS NOT COMPLETED A BACKUP ON THIS MAC!"
+      echo $MESSAGE
+      email_alert
+      exit 1002
+    fi
+  fi
+  # Define the last backup date in seconds
+  LASTBACKUPDATE=`date -j -f "%Y-%m-%d-%H%M%S" $LASTBACKUPSTRING "+%s"`
+  # Write the last backup date to a preferences file.
+  defaults write ~/Library/Preferences/com.datalabprojects.timemachine LastBackup -string ''$LASTBACKUPSTRING''
+  # Get the current time
+  NOW=`date +%s`
+  # Figure out the time offest since the last backup
+  BACKUP_OFFSET=$(($NOW - $LASTBACKUPDATE))
+  # Figure out the desired alert interval from hours to seconds
+  ALERT_INTERVAL_IN_SECONDS=$(($ALERT_INTERVAL * 60 * 60))
+  # Figure out the time since last backup in hours
+  TIME_SINCE_LAST_BACKUP=`echo "scale=2;$BACKUP_OFFSET/60/60" | bc -l`
+  # If the time offset in seconds is greater than the alert interval in seconds, then ALERT!
+  if [ "$BACKUP_OFFSET" -gt "$ALERT_INTERVAL_IN_SECONDS" ]; then
+    # Send an email alert
+    MESSAGE="TIME MACHINE HAS NOT BACKED UP IN $TIME_SINCE_LAST_BACKUP HOURS!"
+    echo $MESSAGE
+    email_alert
+  else
+    echo "TIME MACHINE COMPLETED A BACKUP $TIME_SINCE_LAST_BACKUP HOURS AGO."
+    email_limit_reset
+  fi
+}
+
+email_alert() {
+  if [ "$MESSAGE" != "" ]; then
+    email_limit_check
+    if [ "$EMAILS_SENT" -lt "$ALERT_MAX_EMAILS" ]; then
+      EMAILMESSAGE="/tmp/tm-monitor-email.txt"
+      echo "tm-monitor on $HOSTNAME has triggered an error!"> $EMAILMESSAGE
+      echo "" >> $EMAILMESSAGE
+      echo "$MESSAGE" >> $EMAILMESSAGE
+      echo "" >> $EMAILMESSAGE
+      echo "You are receiving these emails because you are listed as a recipient in the tm-monitor config file." >> $EMAILMESSAGE
+      echo "The config file is located at \"${HOME}/.config/tm-monitor/config\" if you want to change this." >> $EMAILMESSAGE
+      # send an email using /usr/bin/mail
+      /usr/bin/mail -s "$ALERT_SUBJECT" "$ALERT_RECIPIENT" < $EMAILMESSAGE
+      email_limit_increment
+    fi
+  fi 
+}
+
+email_limit_check() {
+  EMAILS_SENT=`defaults read ~/Library/Preferences/com.datalabprojects.timemachine-emails-sent EmailsSent`
+}
+
+email_limit_increment() {
+  EMAILS_SENT=`defaults read ~/Library/Preferences/com.datalabprojects.timemachine-emails-sent EmailsSent`
+  NEW_EMAILS_SENT=$(($EMAILS_SENT + 1))
+  defaults write ~/Library/Preferences/com.datalabprojects.timemachine-emails-sent EmailsSent -string ''$NEW_EMAILS_SENT''
+}
+
+email_limit_reset() {
+  defaults write ~/Library/Preferences/com.datalabprojects.timemachine-emails-sent EmailsSent -string ''0''
+}
+
+test_config() {
+  printf '\033\143'
+  sleep 1
+  # Test the permissions
+  test_permissions
+  # Test that time machine is configured
+  test_time_machine
+  # Test the settings
+  test_tm_monitor_settings
+  # Test the launch agents (make sure they are loaded)
+  test_launch_agents
+}
+
+test_permissions() {
+  echo "In order to function properly, you must have the proper permissions to run tm-monitor."
+  echo "======================================================================================"
+  echo ""
+  sleep 1
+  # Test that the config file is able to be written to.
+  FILE_TO_CHECK="${HOME}/.config/tm-monitor/config"
+  echo "Checking the permissions for you configuration files..."
+  if [ -w "$FILE_TO_CHECK" ]; then
+     echo "[PASS]"
+     echo ""
+  else
+     echo "[FAIL]"
+     exit 1
+  fi
+  sleep 0.5
+  # Test that the launch agents are able to be created.
+  DIRECTORY_TO_CHECK="${HOME}/Library/LaunchAgents"
+  echo "Checking the permissions for your LaunchAgents files..."
+  if [ -w "$DIRECTORY_TO_CHECK" ]; then
+     echo "[PASS]"
+     echo ""
+  else
+     echo "[FAIL]"
+     exit 1
+  fi
+  sleep 0.5
+  # Test that the preference files can be created.
+  DIRECTORY_TO_CHECK="${HOME}/Library/Preferences"
+  echo "Checking the permissions for you Preferences files..."
+  if [ -w "$DIRECTORY_TO_CHECK" ]; then
+     echo "[PASS]"
+     echo ""
+  else
+     echo "[FAIL]"
+     exit 1
+  fi
+  sleep 0.5
+}
+
+test_time_machine() {
+  echo "You must have your Time Machine configured properly for tm-monitor to function."
+  echo "==============================================================================="
+  echo ""
+  sleep 1
+  # Check for destination info
+  echo "Checking for an appropriate Time Machine backup disk..."
+  if [ ! `tmutil destinationinfo | grep "tmutil"` ]; then
+    BACKUP_DISK=`tmutil destinationinfo | grep "Name" | sed 's/Name          : //'`
+    echo "Time Machine will backup to the disk \"$BACKUP_DISK\""
+    echo "[PASS]"
+    echo ""
+  else
+    echo "No backup disk has been set."
+    echo "[FAIL]"
+    exit 1
+  fi
+  sleep 0.5
+  # Check that the destination is mounted
+  echo "Checking that the backup disk is available..."
+  TM_DIR=`tmutil machinedirectory 2> /dev/null || echo ""`
+  if [ "$TM_DIR" ]; then
+    echo "[PASS]"
+    echo ""
+  else
+    echo "[FAIL]"
+    exit 1
+  fi
+  sleep 0.5
+}
+
+test_tm_monitor_settings() {
+  echo "Your config file contains settings that will be needed to run tm-monitor."
+  echo "===================================================================================="
+  echo ""
+  sleep 1
+  # Test the backup interval (when the next backup would be completed)
+  echo "Checking the backup schedule..."
+  BACKUP_TIME_HUMAN=`date -jf"%k:%M" "$BACKUP_TIME" "+%l:%M %p" 2> /dev/null`
+  if [ "$BACKUP_TIME_HUMAN" ]; then
+    echo "The backup should occur at $BACKUP_TIME_HUMAN everyday."
+    echo "[PASS]"
+    echo ""
+  else
+    echo "[FAIL]"
+    exit 1
+  fi
+  sleep 0.5
+
+  # Test the number of emails that will be sent
+  echo "Checking the limit to the number of alert emails that are permitted to be sent..."
+  if [[ $ALERT_MAX_EMAILS =~ ^-?[0-9]+$ ]]; then
+    echo "In case of a backup error you will only receive $ALERT_MAX_EMAILS emails."
+    echo "[PASS]"
+    echo ""
+  else
+    echo "[FAIL]"
+    exit 1
+  fi
+  sleep 0.5
+
+  # Test when it will trigger an alert (seconds, minutes, hours, days)
+  echo "Checking the time allowed to pass before an alert is sent when there is no backup..."
+  ALERT_INTERVAL_IN_YEARS=`echo "scale=5;$ALERT_INTERVAL / 24 / 30 / 365" | bc -l`
+  ALERT_INTERVAL_IN_MONTHS=`echo "scale=3;$ALERT_INTERVAL / 24 / 30" | bc -l`
+  ALERT_INTERVAL_IN_DAYS=`echo "scale=1;$ALERT_INTERVAL / 24" | bc -l`
+  ALERT_INTERVAL_IN_HOURS=$ALERT_INTERVAL
+  ALERT_INTERVAL_IN_MINUTES=`echo "scale=2;$ALERT_INTERVAL * 60" | bc -l`
+  ALERT_INTERVAL_IN_SECONDS=`echo "scale=2;$ALERT_INTERVAL * 60 * 60" | bc -l`
+  if [[ $ALERT_INTERVAL =~ ^-?[0-9]+$ ]]; then
+    echo "An alert email will be sent if the Time Machine has not backed up in more than:"
+    echo "$ALERT_INTERVAL_IN_YEARS years"
+    echo "$ALERT_INTERVAL_IN_MONTHS months"
+    echo "$ALERT_INTERVAL_IN_DAYS days"
+    echo "$ALERT_INTERVAL_IN_HOURS hours"
+    echo "$ALERT_INTERVAL_IN_MINUTES minutes"
+    echo "$ALERT_INTERVAL_IN_SECONDS seconds"
+    echo "[PASS]"
+    echo ""
+  else
+    echo "[FAIL]"
+    exit 1
+  fi
+  sleep 0.5
+
+  # Test the email configuration
+  echo "Checking the configuration for the email alerts..."
+  # Check for a comma in the recipients to denote multiple recipients
+  if [ `echo $ALERT_RECIPIENT | grep ","` ]; then
+    if [ `echo $ALERT_RECIPIENT | grep ", "` ]; then
+      delimeter=", "
+    else
+      delimeter=","
+    fi
+  fi
+  IFS=$delimeter read -a array <<< "$ALERT_RECIPIENT"
+  #Validate the emails as emails and validate the domains with dig
+  for element in "${array[@]}"; do
+    IFS="@"
+    set -- $element
+    if [ "${#@}" -ne 2 ]; then
+      echo "[FAIL]"
+      exit 1
+    fi
+    domain="$2"
+    if [ ! `dig +short $domain` ]; then
+      echo "[FAIL]"
+      exit 1
+    fi
+  done
+  # Return the number of recipients
+  NUMBER_OF_RECIPIENTS=`echo ${#array[@]}`
+  if [ "$NUMBER_OF_RECIPIENTS" -gt 1 ]; then
+    echo "There are $NUMBER_OF_RECIPIENTS recipients of the email alerts."
+    echo "The recipients are:"
+  else
+    echo "There is $NUMBER_OF_RECIPIENTS recipient of the email alerts."
+    echo "The recipient is:"
+  fi
+  # Return the recipients
+  for element in "${array[@]}"; do
+    echo "$element"
+  done
+  echo "[PASS]"
+  echo ""
+  sleep 0.5
+
+  # Send a test email (warn about junk)
+  echo "Checking the ability to send the email alerts..."
+  EMAILMESSAGE="/tmp/tm-monitor-test-email.txt"
+  echo "This is a test email from tm-monitor on $HOSTNAME."> $EMAILMESSAGE
+  echo "" >> $EMAILMESSAGE
+  echo "You are receiving these emails because you are listed as a recipient in the tm-monitor config file." >> $EMAILMESSAGE
+  echo "The config file is located at \"${HOME}/.config/tm-monitor/config\" if you want to change this." >> $EMAILMESSAGE
+  /usr/bin/mail -s "[TEST] $ALERT_SUBJECT" "$ALERT_RECIPIENT" < $EMAILMESSAGE
+  echo "You should recieve a [TEST] email at the recipients email address. You may want to check your spam folder."
+  echo "[PASS]"
+  echo ""
+  sleep 0.5
+}
+
+test_launch_agents() {
+  echo "Proper LaunchAgents are needed for tm-monitor to perform and monitor your backups."
+  echo "=================================================================================="
+  echo ""
+  sleep 1
+  # Check that the LaunchAgent files exists
+  echo "Checking that the tm-monitor LaunchAgent files exist..."
+  if [ -w "$FILE_TO_CHECK" ]; then
+     echo "[PASS]"
+     echo ""
+  else
+     echo "[FAIL]"
+     exit 1
+  fi
+  sleep 0.5
+  # Check that the LaunchAgents are loaded
+  echo "Checking that the tm-monitor LaunchAgents are loaded..."
+  if [ -w "$FILE_TO_CHECK" ]; then
+     echo "[PASS]"
+     echo ""
+  else
+     echo "[FAIL]"
+     exit 1
+  fi
+  sleep 0.5
+}
+
+perform_backup() {
+  tmutil startbackup -a
+}
+
+install_launch_agents() {
+  uninstall_launch_agents
+  echo "Installing LaunchAgents..."
+  # Get the backup time from config
+  BACKUP_HOUR=`date -jf"%k:%M" "$BACKUP_TIME" "+%k"`
+  BACKUP_MINUTE=`date -jf"%k:%M" "$BACKUP_TIME" "+%M"`
+  # Check every 12 hours in 6 hour offsets from the backup time
+  CHECK_TIME_1=`date  -v +6H -jf"%k:%M" "$BACKUP_TIME" "+%H:%M"`
+  CHECK_HOUR_1=`date -jf"%k:%M" "$CHECK_TIME_1" "+%k"`
+  CHECK_MINUTE_1=`date -jf"%k:%M" "$CHECK_TIME_1" "+%M"`
+  CHECK_TIME_2=`date  -v -6H -jf"%k:%M" "$BACKUP_TIME" "+%H:%M"`
+  CHECK_HOUR_2=`date -jf"%k:%M" "$CHECK_TIME_2" "+%k"`
+  CHECK_MINUTE_2=`date -jf"%k:%M" "$CHECK_TIME_2" "+%M"`
+  # Install the backup agent
+  defaults write ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-backup Label -string 'com.datalabprojects.tm-monitor-backup'
+  defaults write ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-backup ProgramArguments -array-add '/usr/local/bin/tm-monitor'
+  defaults write ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-backup ProgramArguments -array-add '--backup'
+  defaults write ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-backup StartCalendarInterval -dict-add 'Hour' -int $BACKUP_HOUR
+  defaults write ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-backup StartCalendarInterval -dict-add 'Minute' -int $BACKUP_MINUTE
+  # Install the monitoring agent
+  defaults write ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-check Label -string 'com.datalabprojects.tm-monitor-check'
+  defaults write ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-check ProgramArguments -array-add '/usr/local/bin/tm-monitor'
+  defaults write ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-check ProgramArguments -array-add '--check'
+  defaults write ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-check StartCalendarInterval -array-add "<dict><key>Hour</key><integer>$CHECK_HOUR_1</integer><key>Minute</key><integer>$CHECK_MINUTE_1</integer></dict>"
+  defaults write ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-check StartCalendarInterval -array-add "<dict><key>Hour</key><integer>$CHECK_HOUR_2</integer><key>Minute</key><integer>$CHECK_MINUTE_2</integer></dict>"
+  echo "Activating LaunchAgents..."
+  # Activate the backup agent
+  launchctl load -w ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-backup.plist
+  # Activate the check agent
+  launchctl load -w ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-check.plist
+}
+
+uninstall_launch_agents(){
+  echo "Deactivating LaunchAgents..."
+  # Deactivate old backup agent
+  running=`echo $(launchctl list | grep com.datalabprojects.tm-monitor-backup)`
+  if [ "$running" ]; then
+    launchctl unload -w ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-backup.plist
+  fi
+  # Deactivate old check agent
+  running=`echo $(launchctl list | grep com.datalabprojects.tm-monitor-check)`
+  if [ "$running" ]; then
+    launchctl unload -w ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-check.plist
+  fi
+  echo "Uninstalling LaunchAgents..."
+  # Remove old backup agent
+  rm -f ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-backup.plist
+  # Remove old check agent
+  rm -f ~/Library/LaunchAgents/com.datalabprojects.tm-monitor-check.plist
+}
+
+# ------------------------------------------------------------
+# Main
+# ------------------------------------------------------------
+
+# Return usage is no option is passed
+if [ $# = 0 ]; then
+  usage;
+fi
+
+# Check if the config file exists
+if [ ! -f ~/.config/tm-monitor/config ]; then
+  setup_needed=1
+fi
+
+while test $# != 0
+do
+  case "$1" in
+    # print the usage message if requested
+    -h|--h|--he|--hel|--help|help)
+      usage_long
+      ;;
+    # print the version info if requested
+    --version|version)
+      echo "Time Machine Monitor version $VERSION"
+      exit 0
+      ;;
+    # activate the setup wizard
+    -s|--s|--se|--set|--setup|setup)
+      check_os_dependency # Only allow compatible OSes
+      setup_config
+      ;;
+    # check for a recent tm backup
+    -c|--c|--ch|--che|--check|check)
+      check_os_dependency # Only allow compatible OSes
+      get_configs
+      perform_tm_check
+      ;;
+    # test the configuration
+    -t|--t|--te|--tes|--test|test)
+      check_os_dependency # Only allow compatible OSes
+      get_configs
+      test_config
+      ;;
+    # perform a backup
+    -b|--b|--ba|--bac|--backup|backup)
+      check_os_dependency # Only allow compatible OSes
+      get_configs
+      perform_backup
+      ;;
+    # install the LaunchAgents
+    -i|--i|--in|--ins|--install|install)
+      check_os_dependency # Only allow compatible OSes
+      get_configs
+      install_launch_agents
+      ;;
+    # uninstall the LaunchAgents
+    -u|--u|--un|--uni|--uninstall|uninstall)
+      check_os_dependency # Only allow compatible OSes
+      get_configs
+      uninstall_launch_agents
+      ;;
+  esac
+  shift
+done
