@@ -562,7 +562,7 @@ do
       ;;
     # print the version info if requested
     --version|version)
-      echo "Time Machine Monitor version $VERSION"
+      echo "tm-monitor version $VERSION"
       exit 0
       ;;
     # activate the setup wizard
