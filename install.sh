@@ -5,7 +5,9 @@
 
 # Create the '/usr/local/bin' directory if it does not exist
 if [ ! -d "/usr/local/bin" ]; then
-  sudo mkdir -p /usr/local/bin
+  sudo mkdir -p /usr/local
+  sudo chmod -R 775 /usr/local
+  mkdir -p /usr/local/bin
 fi
 
 # Download the 'tm-monitor' script
