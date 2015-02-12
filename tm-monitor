@@ -82,6 +82,14 @@ perform_tm_check() {
   fi
 }
 
+perform_test_tm_configuration() {
+  BACKUP_DESTINATION=`tmutil destinationinfo`
+  if [ "$BACKUP_DESTINATION" == "tmutil: No destinations configured." ]; then
+    echo "A Time Machine disk has not been configured. You will need to configure your Time Machine from the System Preferences before using tm-monitor."
+    exit 1
+  fi
+}
+
 ## -----------------------------------------------------------
 ## Usage
 ## -----------------------------------------------------------
@@ -592,35 +600,41 @@ do
     # activate the setup wizard
     -s|--s|--se|--set|--setup|setup)
       check_os_dependency # Only allow compatible OSes
+      perform_test_tm_configuration # Check that time machine has been configured
       setup_config
       ;;
     # check for a recent tm backup
     -c|--c|--ch|--che|--check|check)
       check_os_dependency # Only allow compatible OSes
+      perform_test_tm_configuration # Check that time machine has been configured
       get_configs
       perform_tm_check
       ;;
     # test the configuration
     -t|--t|--te|--tes|--test|test)
       check_os_dependency # Only allow compatible OSes
+      perform_test_tm_configuration # Check that time machine has been configured
       get_configs
       test_config
       ;;
     # perform a backup
     -b|--b|--ba|--bac|--backup|backup)
       check_os_dependency # Only allow compatible OSes
+      perform_test_tm_configuration # Check that time machine has been configured
       get_configs
       perform_backup
       ;;
     # install the LaunchAgents
     -i|--i|--in|--ins|--install|install)
       check_os_dependency # Only allow compatible OSes
+      perform_test_tm_configuration # Check that time machine has been configured
       get_configs
       install_launch_agents
       ;;
     # uninstall the LaunchAgents
     -u|--u|--un|--uni|--uninstall|uninstall)
       check_os_dependency # Only allow compatible OSes
+      perform_test_tm_configuration # Check that time machine has been configured
       get_configs
       uninstall_launch_agents
       ;;
