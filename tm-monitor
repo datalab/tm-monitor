@@ -170,7 +170,7 @@ setup_config() {
   setup_email_alerts
   sleep 1
   setup_write_config
-  echo "Your configuration file has now been written. It may be a good idea to test you configuration by running the \"tm-monitor --test\" command."
+  echo "Your configuration file has now been written. You can now install the launch agents with the \"tm-monitor --install\" command."
   exit 0
 }
 
