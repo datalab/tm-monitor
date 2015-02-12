@@ -19,11 +19,72 @@ readonly VERSION='0.1'
 # Functions
 # ------------------------------------------------------------
 
+## -----------------------------------------------------------
+## General
+## -----------------------------------------------------------
+
 get_configs() {
   set -e
   [[  -e ${HOME}/.config/tm-monitor/config ]] && \
   source ${HOME}/.config/tm-monitor/config
 }
+
+perform_backup() {
+  tmutil startbackup -a
+}
+
+check_os_dependency() {
+  # Current version
+  OS_VERSION=`sw_vers -productVersion | grep -E -o "[0-9]+\.[0-9]+" | sed 's,\s*\.\s*,,g'`
+  # Minimum version is 10.10
+  VALID_OS=`echo "$OS_VERSION < 1010" | bc -l`
+  if [ $VALID_OS == 1 ]; then
+    echo "tm-monitor is only compatable with OS 10.10 (Yosemite) or greater."
+    exit 1
+  fi
+}
+
+perform_tm_check() {
+  # Check the time machine disk for the last backup date as a string
+  LASTBACKUPSTRING=`echo $(tmutil latestbackup | grep -E -o "[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}")`
+  # If there is no string, then read the preferences file
+  if [ "$LASTBACKUPSTRING" == "" ]; then
+    LASTBACKUPSTRING=`defaults read ~/Library/Preferences/com.datalabprojects.timemachine LastBackup`
+    if [ "$LASTBACKUPSTRING" == "" ]; then
+      # Send an email alert
+      MESSAGE="TIME MACHINE HAS NOT COMPLETED A BACKUP ON THIS MAC!"
+      echo $MESSAGE
+      email_alert
+      exit 1002
+    fi
+  fi
+  # Define the last backup date in seconds
+  LASTBACKUPDATE=`date -j -f "%Y-%m-%d-%H%M%S" $LASTBACKUPSTRING "+%s"`
+  # Write the last backup date to a preferences file.
+  defaults write ~/Library/Preferences/com.datalabprojects.timemachine LastBackup -string ''$LASTBACKUPSTRING''
+  # Get the current time
+  NOW=`date +%s`
+  # Figure out the time offest since the last backup
+  BACKUP_OFFSET=$(($NOW - $LASTBACKUPDATE))
+  # Figure out the desired alert interval from hours to seconds
+  ALERT_INTERVAL_IN_SECONDS=$(($ALERT_INTERVAL * 60 * 60))
+  # Figure out the time since last backup in hours
+  TIME_SINCE_LAST_BACKUP=`echo "scale=2;$BACKUP_OFFSET/60/60" | bc -l`
+  # If the time offset in seconds is greater than the alert interval in seconds, then ALERT!
+  if [ "$BACKUP_OFFSET" -gt "$ALERT_INTERVAL_IN_SECONDS" ]; then
+    # Send an email alert
+    MESSAGE="TIME MACHINE HAS NOT BACKED UP IN $TIME_SINCE_LAST_BACKUP HOURS!"
+    echo $MESSAGE
+    email_alert
+  else
+    echo "TIME MACHINE COMPLETED A BACKUP $TIME_SINCE_LAST_BACKUP HOURS AGO."
+    email_limit_reset
+  fi
+}
+
+## -----------------------------------------------------------
+## Usage
+## -----------------------------------------------------------
 
 usage_long() {
 less << EOF
@@ -79,6 +140,10 @@ usage() {
   echo ""
   exit $ERROR_USAGE
 }
+
+## -----------------------------------------------------------
+## Setup
+## -----------------------------------------------------------
 
 setup_warning() {
   echo "The configuration file does not exist. Try running 'tm-monitor --setup'"
@@ -182,54 +247,9 @@ setup_write_config() {
   chmod 600 ${HOME}/.config/tm-monitor/config
 }
 
-check_os_dependency() {
-  # Current version
-  OS_VERSION=`sw_vers -productVersion | grep -E -o "[0-9]+\.[0-9]+" | sed 's,\s*\.\s*,,g'`
-  # Minimum version is 10.10
-  VALID_OS=`echo "$OS_VERSION < 1010" | bc -l`
-  if [ $VALID_OS == 1 ]; then
-    echo "tm-monitor is only compatable with OS 10.10 (Yosemite) or greater."
-    exit 1
-  fi
-}
-
-perform_tm_check() {
-  # Check the time machine disk for the last backup date as a string
-  LASTBACKUPSTRING=`echo $(tmutil latestbackup | grep -E -o "[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}")`
-  # If there is no string, then read the preferences file
-  if [ "$LASTBACKUPSTRING" == "" ]; then
-    LASTBACKUPSTRING=`defaults read ~/Library/Preferences/com.datalabprojects.timemachine LastBackup`
-    if [ "$LASTBACKUPSTRING" == "" ]; then
-      # Send an email alert
-      MESSAGE="TIME MACHINE HAS NOT COMPLETED A BACKUP ON THIS MAC!"
-      echo $MESSAGE
-      email_alert
-      exit 1002
-    fi
-  fi
-  # Define the last backup date in seconds
-  LASTBACKUPDATE=`date -j -f "%Y-%m-%d-%H%M%S" $LASTBACKUPSTRING "+%s"`
-  # Write the last backup date to a preferences file.
-  defaults write ~/Library/Preferences/com.datalabprojects.timemachine LastBackup -string ''$LASTBACKUPSTRING''
-  # Get the current time
-  NOW=`date +%s`
-  # Figure out the time offest since the last backup
-  BACKUP_OFFSET=$(($NOW - $LASTBACKUPDATE))
-  # Figure out the desired alert interval from hours to seconds
-  ALERT_INTERVAL_IN_SECONDS=$(($ALERT_INTERVAL * 60 * 60))
-  # Figure out the time since last backup in hours
-  TIME_SINCE_LAST_BACKUP=`echo "scale=2;$BACKUP_OFFSET/60/60" | bc -l`
-  # If the time offset in seconds is greater than the alert interval in seconds, then ALERT!
-  if [ "$BACKUP_OFFSET" -gt "$ALERT_INTERVAL_IN_SECONDS" ]; then
-    # Send an email alert
-    MESSAGE="TIME MACHINE HAS NOT BACKED UP IN $TIME_SINCE_LAST_BACKUP HOURS!"
-    echo $MESSAGE
-    email_alert
-  else
-    echo "TIME MACHINE COMPLETED A BACKUP $TIME_SINCE_LAST_BACKUP HOURS AGO."
-    email_limit_reset
-  fi
-}
+## -----------------------------------------------------------
+## Email
+## -----------------------------------------------------------
 
 email_alert() {
   if [ "$MESSAGE" != "" ]; then
@@ -262,6 +282,10 @@ email_limit_increment() {
 email_limit_reset() {
   defaults write ~/Library/Preferences/com.datalabprojects.timemachine-emails-sent EmailsSent -string ''0''
 }
+
+## -----------------------------------------------------------
+## Tests
+## -----------------------------------------------------------
 
 test_config() {
   printf '\033\143'
@@ -484,9 +508,9 @@ test_launch_agents() {
   sleep 0.5
 }
 
-perform_backup() {
-  tmutil startbackup -a
-}
+## -----------------------------------------------------------
+## Installation
+## -----------------------------------------------------------
 
 install_launch_agents() {
   uninstall_launch_agents
